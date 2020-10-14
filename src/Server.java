@@ -1,20 +1,28 @@
-import enumObj.Operation;
+import model.Operation;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class Server {
     private final static Logger logger = Logger.getLogger(Server.class.getSimpleName());
 
     private final static int BUFFER_SIZE = 1024;
+    private final static Charset CHARSET = StandardCharsets.UTF_8;
 
     private final Selector selector = Selector.open();
 
@@ -36,30 +44,17 @@ public class Server {
         server.bind(serverAddr);
         server.register(selector, SelectionKey.OP_ACCEPT);
 
-        FileChannel credentials = FileChannel.open(Path.of("./credentials.txt"));
-        byte[] file = Utils.readBuffer(credentials, fileBuffer);
-        credentialsList = Arrays.asList(new String(file).split("\\n"));
-        credentials.close();
+        Stream<String> lines = Files.lines(Path.of("credentials.txt"));
+        credentialsList = lines.collect(Collectors.toList());
     }
 
     public static void main(String[] args) throws IOException {
         new Server(8088).start();
     }
 
-    /**
-     * generate response byte array
-     *
-     * @param code   response code
-     * @param length content-size
-     * @param type   content-type
-     * @param data   content data
-     * @return byte array
-     */
-    private byte[] generateResponse(int code, int length, String type, byte[] data) {
-        String header = code + "\r\n" +
-                length + "\r\n" +
-                type + "\r\n";
-        return Utils.merge(header.getBytes(), data);
+    private byte[] generateResponse(int code, int length, char type, byte[] data) {
+        byte[] header = Utils.header(type, length, code);
+        return Utils.merge(header, data);
     }
 
     private Set<SelectionKey> getConnectedChannel() {
@@ -78,29 +73,47 @@ public class Server {
     private void resolveCommand(SelectionKey key) throws IOException {
         String username = (String) key.attachment();
         var sc = (SocketChannel) key.channel();
-        byte[] data = Utils.readBuffer(sc, readBuffer);
-        String strData = new String(data);
+        byte[] data;
+        try {
+            data = Utils.readBuffer(sc, readBuffer, logger);
+        } catch (IOException e) {
+            logger.warning(e.getMessage());
+            return;
+        }
+        String strData = new String(data, CHARSET);
         String[] split = strData.split("\\r?\\n");
         int dataSize = Integer.parseInt(split[0]);
         String dataType = split[1];
         var op_param = split[2].split("\\s+", 2);
-        Operation operation = Operation.valueOf(op_param[0]);
+        Operation operation;
+        try {
+            operation = Operation.fromString(op_param[0]);
+        } catch (IllegalArgumentException e) {
+            var errorMsg = e.getLocalizedMessage();
+            Utils.writeBuffer(generateResponse(500, errorMsg.length(), 's', errorMsg.getBytes(CHARSET)),
+                    sc,
+                    writeBuffer,
+                    BUFFER_SIZE);
+            key.attach(username);
+            logger.info("WRONG COMMAND!");
+            return;
+        }
         String param = op_param[1];
 
         switch (operation) {
             case AUTH:
                 if (credentialsList.contains(param)) {
-                    String msg = "OK";
-                    Utils.writeBuffer(generateResponse(200, msg.length(), "text", msg.getBytes()),
+                    username = param.split("\\s+")[0];
+                    String msg = "Welcome " + username + " !\n";
+                    Utils.writeBuffer(generateResponse(200, msg.length(), 's', msg.getBytes(CHARSET)),
                             sc,
                             writeBuffer,
                             BUFFER_SIZE);
-                    username = param.split("\\s+")[0];
                     key.attach(username);
                     logger.info(username + " successful login");
                 } else {
-                    String msg = "Invalid password";
-                    Utils.writeBuffer(generateResponse(403, msg.length(), "text", msg.getBytes()),
+                    String msg = "Invalid password\n";
+                    Utils.writeBuffer(generateResponse(403, msg.length(), 's', msg.getBytes(CHARSET)),
                             sc,
                             writeBuffer,
                             BUFFER_SIZE);
@@ -113,19 +126,22 @@ public class Server {
                             StandardOpenOption.CREATE_NEW,
                             StandardOpenOption.WRITE);
                     String threadData = username + "\n";
-                    Utils.writeBuffer(threadData.getBytes(), thread, fileBuffer, BUFFER_SIZE);
+                    Utils.writeBuffer(threadData.getBytes(CHARSET), thread, fileBuffer, BUFFER_SIZE);
                 } catch (FileAlreadyExistsException e) {
                     logger.info("Thread " + param + " exists");
                 }
+                break;
+            default:
 
         }
     }
 
     public void start() throws IOException {
-        Scanner in = new Scanner(System.in);
         logger.info("Waiting for clients");
         while (true) {
-            selector.select();
+            if (selector.select(100) == 0) {
+                continue;
+            }
             Set<SelectionKey> keys = selector.selectedKeys();
             Iterator<SelectionKey> iterator = keys.iterator();
             while (iterator.hasNext()) {
@@ -145,16 +161,11 @@ public class Server {
                 } else if (key.isReadable()) {
                     var client = (SocketChannel) key.channel();
                     logger.info("received data from " + client);
-                    readBuffer.clear();
-                    int size = client.read(readBuffer);
-                    if (size == -1) {
-                        logger.info("lost connection: " + client);
-                        client.close();
+                    try {
+                        resolveCommand(key);
+                    } catch (IOException e) {
+                        e.printStackTrace();
                     }
-//                        readBuffer.flip();
-                    System.out.println(new String(readBuffer.array(), 0, readBuffer.position()));
-
-
                 }
             }
         }

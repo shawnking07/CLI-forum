@@ -1,33 +1,41 @@
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.SocketChannel;
-import java.util.Iterator;
-import java.util.Scanner;
-import java.util.Set;
+import model.Header;
+import model.Operation;
+
+import java.io.*;
+import java.net.Socket;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
 
 public class Client {
     private final static Logger logger = Logger.getLogger(Client.class.getSimpleName());
 
-    private final static int BUFFER_SIZE = 1024;
+    private final static Charset CHARSET = StandardCharsets.UTF_8;
 
-    private final Selector selector = Selector.open();
+    private final BufferedReader inReader = new BufferedReader(new InputStreamReader(System.in));
 
-    private final ByteBuffer writeBuffer = ByteBuffer.allocate(BUFFER_SIZE);
-    private final ByteBuffer readBuffer = ByteBuffer.allocate(BUFFER_SIZE);
-
-    private final boolean isLogin = false;
+    private final Lock lock = new ReentrantLock(); // Lock for isLogin flag
+    private final Socket socket;
+    private boolean isLogin = false;
 
     public Client(int port) throws IOException {
-        InetSocketAddress server = new InetSocketAddress(port);
-        SocketChannel sc = SocketChannel.open();
-        sc.configureBlocking(false);
-        sc.connect(server);
-        sc.register(selector, SelectionKey.OP_CONNECT);
+        socket = new Socket("127.0.0.1", port);
+
+        Runnable readProcess = () -> {
+            while (true) {
+                try {
+                    DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+                    resolveResponse(inputStream);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        };
+        new Thread(readProcess).start();
     }
+
 
     public static void main(String[] args) throws IOException {
         if (args.length != 1) {
@@ -43,55 +51,83 @@ public class Client {
             throw new RuntimeException("invalid port number");
         }
 
-        new Client(port).start();
-
+        Client client = new Client(port);
+        client.writeProcess();
     }
 
     private byte[] authData() {
 //        String username = System.console().readLine("Enter username: ");
 //        String password = new String(System.console().readPassword("Enter password: "));
 
-        String username = "test";
-        String password = "passwd";
+        String username = "Yoda";
+        String password = "jedi*knight";
 
         String header = "0\r\nAUTH\r\n";
         String auth_ = header + "ATH " + username + " " + password + "\r\n";
 
-        return auth_.getBytes();
+        return auth_.getBytes(StandardCharsets.UTF_8);
     }
 
-    public void start() throws IOException {
-        Scanner in = new Scanner(System.in);
+    public void writeProcess() throws IOException {
         while (true) {
-            selector.select();
-            Set<SelectionKey> keys = selector.selectedKeys();
-//            logger.info("keys=" + keys.size());
-            Iterator<SelectionKey> iterator = keys.iterator();
-            while (iterator.hasNext()) {
-                SelectionKey key = iterator.next();
-                iterator.remove();
+            DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+            if (isLogin) {
+                System.out.println("Enter one of the following commands: CRT, MSG, DLT, EDT, LST, RDT, UPD, DWN, RMV, XIT, SHT:");
+                String input = inReader.readLine();
+                var splits = input.split("\\s+");
+                String cmd = splits[0];
+                Operation operation;
+                try {
+                    operation = Operation.fromString(cmd);
+                } catch (IllegalArgumentException e) {
+                    logger.warning(e.getLocalizedMessage());
+                    continue;
+                }
+                switch (operation) {
+                    case CREATE_THREAD:
+                        String threadTitle = splits[1];
 
-                var sc = (SocketChannel) key.channel();
-                if (key.isConnectable()) {
-                    logger.info("connected");
-
-                    sc.finishConnect(); // blocking connect
-                    sc.register(selector, SelectionKey.OP_WRITE);
-                    Utils.writeBuffer(authData(), sc, writeBuffer, BUFFER_SIZE);
-                } else if (key.isWritable()) {
-                    logger.info("send data");
-                    System.out.println("Enter one of the following commands: CRT, MSG, DLT, EDT, LST, RDT, UPD, DWN, RMV, XIT, SHT: ");
-                    String input = in.nextLine();
-                    Utils.writeBuffer(input.getBytes(), sc, writeBuffer, BUFFER_SIZE);
-                    key.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
-                } else if (key.isReadable()) {
-                    logger.info("received data");
-                    byte[] data = Utils.readBuffer(sc, readBuffer);
-                    System.out.println(new String(data));
-                    key.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
                 }
 
+            } else {
+                outputStream.write(authData());
             }
         }
     }
+
+    private byte[] generateRequest(Operation op, String param, String dataType, byte[] data) {
+
+    }
+
+
+    private void resolveResponse(DataInputStream in) throws IOException {
+        Header header = Utils.resolveHeader(in);
+
+        byte[] attachedData = Utils.readStream(in, header.getSize());
+
+        lock.lock();
+
+        switch (header.getStatus()) {
+            case 403:
+                try {
+                    this.isLogin = false;
+                } finally {
+                    lock.unlock();
+                }
+                System.out.println(new String(attachedData, CHARSET));
+                break;
+            case 200:
+                try {
+                    this.isLogin = true;
+                } finally {
+                    lock.unlock();
+                }
+                System.out.println(new String(attachedData, CHARSET));
+                break;
+            default:
+                System.out.println(new String(attachedData, CHARSET));
+        }
+
+    }
+
 }
