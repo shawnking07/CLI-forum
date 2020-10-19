@@ -2,6 +2,7 @@
 
 ## Data structure
 
+<!--
 protocol
 
 ```
@@ -49,3 +50,4 @@ text
 
 wrong credential
 ```
+-->

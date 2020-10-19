@@ -1,29 +1,33 @@
 import model.Header;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
+import java.nio.channels.*;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Optional;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 public class Utils {
     public static final int HEADER_SIZE = 32;
+    public final static Charset CHARSET = StandardCharsets.UTF_8;
 
-    public static byte[] readBuffer(ReadableByteChannel sc, ByteBuffer buffer, Logger logger) throws IOException {
+    public static byte[] readBuffer(SelectionKey key, ByteBuffer buffer, Logger logger) throws IOException {
         // may have sticky TCP packet problem
         // not handle it cuz our data is not sent continuously
+        String username = (String) key.attachment();
+        var sc = (SocketChannel) key.channel();
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         while (true) {
             buffer.clear();
             int size = sc.read(buffer);
             if (size == -1) {
-                logger.info("lost connection " + sc);
+                logger.info(username + " lost connection " + sc);
                 sc.close();
                 throw new IOException("lost connection");
             }
@@ -43,33 +47,48 @@ public class Utils {
         }
     }
 
+    /**
+     * merge 2 byte arrays
+     *
+     * @param a byte array
+     * @param b byte array
+     * @return new array
+     */
     public static byte[] merge(byte[] a, byte[] b) {
         byte[] joinedArray = Arrays.copyOf(a, a.length + b.length);
         System.arraycopy(b, 0, joinedArray, a.length, b.length);
         return joinedArray;
     }
 
-    public static List<byte[]> splitByteArray(byte[] array, byte[] delimiter) {
-        List<byte[]> byteArrays = new LinkedList<>();
-        if (delimiter.length == 0) {
-            return byteArrays;
-        }
-        int begin = 0;
-
-        outer:
-        for (int i = 0; i < array.length - delimiter.length + 1; i++) {
-            for (int j = 0; j < delimiter.length; j++) {
-                if (array[i + j] != delimiter[j]) {
-                    continue outer;
-                }
+    private static boolean isMatch(byte[] pattern, byte[] input, int pos) {
+        for (int i = 0; i < pattern.length; i++) {
+            if (pattern[i] != input[pos + i]) {
+                return false;
             }
-            byteArrays.add(Arrays.copyOfRange(array, begin, i));
-            begin = i + delimiter.length;
         }
-        byteArrays.add(Arrays.copyOfRange(array, begin, array.length));
-        return byteArrays;
+        return true;
     }
 
+    public static List<byte[]> splitByteArray(byte[] input, byte[] pattern) {
+        List<byte[]> l = new LinkedList<>();
+        int blockStart = 0;
+        for (int i = 0; i < input.length; i++) {
+            if (isMatch(pattern, input, i)) {
+                l.add(Arrays.copyOfRange(input, blockStart, i));
+                blockStart = i + pattern.length;
+                i = blockStart;
+            }
+        }
+        l.add(Arrays.copyOfRange(input, blockStart, input.length));
+        return l;
+    }
+
+    /**
+     * split request byte array to header and body data
+     *
+     * @param array
+     * @return
+     */
     public static List<byte[]> splitByteArray(byte[] array) {
         return splitByteArray(array, "\r\n\r\n".getBytes(StandardCharsets.UTF_8));
     }
@@ -78,6 +97,14 @@ public class Utils {
         return data.length == size;
     }
 
+    /**
+     * generate header to byte array
+     *
+     * @param type
+     * @param size
+     * @param status
+     * @return
+     */
     public static byte[] header(char type, int size, int status) {
         ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_SIZE);
         headerBuffer.putChar(type);
@@ -86,6 +113,13 @@ public class Utils {
         return headerBuffer.array();
     }
 
+    /**
+     * resolve response header from stream
+     *
+     * @param in
+     * @return
+     * @throws IOException
+     */
     public static Header resolveHeader(DataInputStream in) throws IOException {
         ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_SIZE);
         for (int i = 0; i < HEADER_SIZE; i++) {
@@ -98,12 +132,44 @@ public class Utils {
         return new Header(type, size, status);
     }
 
+    /**
+     * read response stream for client
+     *
+     * @param in
+     * @param size
+     * @return
+     * @throws IOException
+     */
     public static byte[] readStream(DataInputStream in, int size) throws IOException {
         byte[] data = new byte[size];
         for (int i = 0; i < size; i++) {
             data[i] = (byte) in.read();
         }
         return data;
+    }
+
+    /**
+     * from {@link java.nio.channels.ReadableByteChannel} read lines
+     *
+     * @param channel ReadableByteChannel
+     * @return String stream
+     */
+    public static Stream<String> lines(ReadableByteChannel channel) {
+        BufferedReader br = new BufferedReader(Channels.newReader(channel, CHARSET));
+        return br.lines().onClose(() -> {
+            try {
+                br.close();
+            } catch (IOException ex) {
+                throw new UncheckedIOException(ex);
+            }
+        });
+    }
+
+    public static Optional<String> getExtension(Path filePath) {
+        var fileName = filePath.getFileName().toString();
+        return Optional.ofNullable(fileName)
+                .filter(f -> f.contains("."))
+                .map(f -> f.substring(fileName.lastIndexOf(".") + 1));
     }
 
 }
