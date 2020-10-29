@@ -102,7 +102,7 @@ public class Server {
             logger.info("WRONG COMMAND!\n");
             return;
         }
-        String param = op_param[1];
+        String param = op_param[1].trim();
 
         byte[] attached = new byte[0];
         if (dataSize > 0) {
