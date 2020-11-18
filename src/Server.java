@@ -54,7 +54,7 @@ public class Server {
 
     public static void main(String[] args) throws IOException {
         String adminPassword = args[1];
-        new Server(8088, adminPassword).start();
+        new Server(Integer.parseInt(args[0]), adminPassword).start();
     }
 
     private byte[] generateResponse(int code, int length, char type, byte[] data) {

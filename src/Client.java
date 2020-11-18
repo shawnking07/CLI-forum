@@ -79,7 +79,7 @@ public class Client {
         readThread.start();
 
         while (true) {
-            System.out.println("Enter one of the following commands: CRT, MSG, DLT, EDT, LST, RDT, UPD, DWN, RMV, XIT, SHT:");
+            System.out.printf("Enter one of the following commands: CRT, MSG, DLT, EDT, LST, RDT, UPD, DWN, RMV, XIT, SHT: ");
             String input = inReader.readLine();
             var splits = input.split("\\s+", 2);
             String cmd = splits[0];
